@@ -5,7 +5,7 @@ use crate::definitions::Status;
 use crate::error::QueryError;
 use crate::event::Event;
 use crate::parser::Decoder;
-use tokio::net::TcpStream;
+use crate::protocol::ssh::{ChannelReader, ChannelWriter};
 use tokio::time::sleep;
 
 pub(super) struct Connection {
@@ -17,18 +17,21 @@ pub(super) struct Connection {
 
 impl Connection {
     pub fn new(
-        stream: TcpStream,
+        reader: ChannelReader,
+        writer: ChannelWriter,
         event_tx: flume::Sender<Event>,
         command_rx: flume::Receiver<RawCommandRequest>,
         command_tx: flume::Sender<RawCommandRequest>,
         shutdown_rx: flume::Receiver<()>,
     ) -> Self {
         let (response_tx, response_rx) = flume::unbounded::<RawCommandResponse>();
-        let (reader, writer) = stream.into_split();
+
+        let reader = Reader::new(reader, response_tx, event_tx);
+        let writer = Writer::new(writer, response_rx, command_rx);
 
         Self {
-            reader: Reader::new(reader, response_tx, event_tx),
-            writer: Writer::new(writer, response_rx, command_rx),
+            reader,
+            writer,
             command_tx,
             shutdown_rx,
         }

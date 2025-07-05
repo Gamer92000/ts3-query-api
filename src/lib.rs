@@ -8,10 +8,9 @@
 ///
 /// #[tokio::main]
 /// async fn main() -> Result<(), QueryError> {
-///     let client = QueryClient::connect(("localhost", 10011)).await?;
+///     let client = QueryClient::connect(("localhost", 10022), "username", "password").await?;
 ///
-///     // Login and select virtual server
-///     client.login("username", "password").await?;
+///     // select virtual server
 ///     client.use_sid(1).await?;
 ///     client.server_notify_register(EventType::Channel).await?;
 ///

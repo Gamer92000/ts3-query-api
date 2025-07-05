@@ -1,14 +1,13 @@
-use crate::error::QueryError;
 use crate::event::Event;
 use crate::protocol::types::RawCommandResponse;
+use crate::{error::QueryError, protocol::ssh::ChannelReader};
 use bytes::BytesMut;
 use log::{debug, error, log_enabled, trace};
 use std::cmp::max;
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, BufReader};
-use tokio::net::tcp::OwnedReadHalf;
 
 pub(super) struct Reader {
-    reader: BufReader<OwnedReadHalf>,
+    reader: BufReader<ChannelReader>,
     response_tx: flume::Sender<RawCommandResponse>,
     event_tx: flume::Sender<Event>,
 
@@ -20,7 +19,7 @@ pub(super) struct Reader {
 
 impl Reader {
     pub fn new(
-        reader: OwnedReadHalf,
+        reader: ChannelReader,
         response_tx: flume::Sender<RawCommandResponse>,
         event_tx: flume::Sender<Event>,
     ) -> Self {

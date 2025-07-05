@@ -84,4 +84,7 @@ pub enum QueryError {
 
     #[error("Query error: {message} ({id})")]
     QueryError { id: i32, message: String },
+
+    #[error("SSH Connection Error")]
+    SshError(#[from] makiko::Error),
 }

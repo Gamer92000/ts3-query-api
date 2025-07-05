@@ -1,23 +1,23 @@
 use crate::error::QueryError;
+use crate::protocol::ssh::ChannelWriter;
 use crate::protocol::types::{RawCommandRequest, RawCommandResponse};
 use log::debug;
-use tokio::io::AsyncWriteExt;
-use tokio::net::tcp::OwnedWriteHalf;
+use tokio::io::{AsyncWriteExt, BufWriter};
 
 pub(super) struct Writer {
-    writer: OwnedWriteHalf,
+    writer: BufWriter<ChannelWriter>,
     response_rx: flume::Receiver<RawCommandResponse>,
     command_rx: flume::Receiver<RawCommandRequest>,
 }
 
 impl Writer {
     pub fn new(
-        writer: OwnedWriteHalf,
+        writer: ChannelWriter,
         response_rx: flume::Receiver<RawCommandResponse>,
         command_rx: flume::Receiver<RawCommandRequest>,
     ) -> Self {
         Self {
-            writer,
+            writer: BufWriter::new(writer),
             response_rx,
             command_rx,
         }
@@ -42,6 +42,8 @@ impl Writer {
             .write_all(command.data.as_bytes())
             .await
             .map_err(QueryError::WriteError)?;
+
+        let _ = self.writer.flush().await.map_err(QueryError::WriteError);
 
         let response = self
             .response_rx

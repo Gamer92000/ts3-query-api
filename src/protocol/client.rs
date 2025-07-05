@@ -3,7 +3,9 @@ use crate::error::{ParseError, QueryError};
 use crate::event::Event;
 use crate::parser::{Command, Decode, DecodeCustomInto, DecodeInto, Decoder};
 use crate::protocol::connection::Connection;
+use crate::protocol::ssh::{ChannelReader, ChannelWriter};
 use crate::protocol::types::{RawCommandRequest, RawCommandResponse};
+use log::info;
 use tokio::net::{TcpStream, ToSocketAddrs};
 use tokio::spawn;
 
@@ -14,17 +16,77 @@ pub struct QueryClient {
 }
 
 impl QueryClient {
-    pub async fn connect<A: ToSocketAddrs>(addr: A) -> Result<Self, QueryError> {
+    pub async fn connect<A: ToSocketAddrs>(
+        addr: A,
+        username: &str,
+        password: &str,
+    ) -> Result<Self, QueryError> {
         let stream = TcpStream::connect(addr)
             .await
             .map_err(QueryError::ConnectionFailed)?;
+
+        let config = makiko::ClientConfig::default();
+        let (client, mut client_rx, client_fut) = makiko::Client::open(stream, config)?;
+
+        tokio::task::spawn(async move {
+            client_fut.await.expect("Error in client future");
+        });
+
+        tokio::task::spawn(async move {
+            loop {
+                let event = client_rx
+                    .recv()
+                    .await
+                    .expect("Error while receiving client event");
+
+                let Some(event) = event else { break };
+
+                match event {
+                    makiko::ClientEvent::ServerPubkey(pubkey, accept) => {
+                        info!(
+                            "Server pubkey type {}, fingerprint {}",
+                            pubkey.type_str(),
+                            pubkey.fingerprint()
+                        );
+                        accept.accept();
+                    }
+
+                    _ => {}
+                }
+            }
+        });
+
+        let auth_res = client
+            .auth_password(username.into(), password.into())
+            .await
+            .expect("Error when trying to authenticate");
+
+        match auth_res {
+            makiko::AuthPasswordResult::Success => {
+                info!("We have successfully authenticated using a password");
+            }
+            makiko::AuthPasswordResult::ChangePassword(prompt) => {
+                panic!("The server asks us to change password: {:?}", prompt);
+            }
+            makiko::AuthPasswordResult::Failure(failure) => {
+                panic!("The server rejected authentication: {:?}", failure);
+            }
+        }
+
+        let (sess, sess_rx) = client
+            .open_session(makiko::ChannelConfig::default())
+            .await?;
+
+        let a = sess.shell()?;
+        a.wait().await?;
 
         let (command_tx, command_rx) = flume::unbounded::<RawCommandRequest>();
         let (event_tx, event_rx) = flume::unbounded::<Event>();
         let (shutdown_tx, shutdown_rx) = flume::unbounded::<()>();
 
         let mut connection = Connection::new(
-            stream,
+            ChannelReader::new(sess_rx),
+            ChannelWriter::new(sess),
             event_tx,
             command_rx,
             command_tx.clone(),
