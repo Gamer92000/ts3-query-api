@@ -2,13 +2,20 @@
 ///
 /// ## Example
 /// ```no_run
-/// use ts3_query_api::QueryClient;
+/// use ts3_query_api::{QueryClient, HostKeyVerification};
 /// use ts3_query_api::error::QueryError;
 /// use ts3_query_api::definitions::EventType;
 ///
 /// #[tokio::main]
 /// async fn main() -> Result<(), QueryError> {
-///     let client = QueryClient::connect(("localhost", 10022), "username", "password").await?;
+///     // Pin the server's SHA-256 fingerprint (printed on first connect), or use
+///     // HostKeyVerification::InsecureAcceptAny on a trusted network.
+///     let client = QueryClient::connect(
+///         ("localhost", 10022),
+///         "username",
+///         "password",
+///         HostKeyVerification::InsecureAcceptAny,
+///     ).await?;
 ///
 ///     // select virtual server
 ///     client.use_sid(1).await?;

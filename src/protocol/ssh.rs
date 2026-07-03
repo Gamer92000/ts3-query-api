@@ -4,17 +4,19 @@ use bytes::BytesMut;
 use makiko::Session;
 use makiko::SessionEvent;
 use makiko::SessionReceiver;
+use std::future::Future;
 use std::pin::Pin;
-use std::task::Waker;
 use std::task::{Context, Poll};
 use tokio::io::AsyncWrite;
 use tokio::io::{AsyncRead, Result as IoResult};
 
+type SendFut = Pin<Box<dyn Future<Output = Result<(), makiko::Error>> + Send>>;
+
 pub struct ChannelWriter {
     channel: Session,
     buffer: BytesMut,
-    flushing: bool,
-    waker: Option<Waker>,
+    /// The in-flight `send_stdin` future, if a flush is currently in progress.
+    send_fut: Option<SendFut>,
 }
 
 impl ChannelWriter {
@@ -22,48 +24,8 @@ impl ChannelWriter {
         Self {
             channel,
             buffer: BytesMut::with_capacity(8192),
-            flushing: false,
-            waker: None,
+            send_fut: None,
         }
-    }
-
-    /// Flush the buffer asynchronously, returning Poll::Pending if still flushing,
-    /// and Poll::Ready when done.
-    fn poll_flush_inner(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<IoResult<()>> {
-        if self.buffer.is_empty() {
-            // Nothing to flush
-            self.flushing = false;
-            return Poll::Ready(Ok(()));
-        }
-
-        if self.flushing {
-            // Flush is ongoing, store the waker and return Pending
-            self.waker = Some(cx.waker().clone());
-            return Poll::Pending;
-        }
-
-        // Start flushing
-        self.flushing = true;
-
-        // Extract the data to send
-        let data = self.buffer.split().freeze();
-
-        // Kick off the async send - spawn a task that completes flush and wakes this task
-        let channel = self.channel.clone();
-        let waker = cx.waker().clone();
-
-        tokio::spawn(async move {
-            // Perform the async send
-            let _ = channel.send_stdin(data).await;
-
-            // Wake the task to resume polling flush
-            waker.wake();
-        });
-
-        // Store the current waker for future wake-ups if needed
-        self.waker = Some(cx.waker().clone());
-
-        Poll::Pending
     }
 }
 
@@ -77,8 +39,31 @@ impl AsyncWrite for ChannelWriter {
         Poll::Ready(Ok(buf.len()))
     }
 
-    fn poll_flush(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<IoResult<()>> {
-        self.as_mut().poll_flush_inner(cx)
+    fn poll_flush(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<IoResult<()>> {
+        let this = self.get_mut();
+
+        loop {
+            // Drive any in-flight send to completion first.
+            if let Some(fut) = this.send_fut.as_mut() {
+                match fut.as_mut().poll(cx) {
+                    Poll::Ready(Ok(())) => this.send_fut = None,
+                    Poll::Ready(Err(e)) => {
+                        this.send_fut = None;
+                        return Poll::Ready(Err(std::io::Error::other(e)));
+                    }
+                    Poll::Pending => return Poll::Pending,
+                }
+            }
+
+            if this.buffer.is_empty() {
+                return Poll::Ready(Ok(()));
+            }
+
+            // Own the data in a 'static future so it can be polled across calls.
+            let channel = this.channel.clone();
+            let data = this.buffer.split().freeze();
+            this.send_fut = Some(Box::pin(async move { channel.send_stdin(data).await }));
+        }
     }
 
     fn poll_shutdown(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<IoResult<()>> {
@@ -126,7 +111,7 @@ impl AsyncRead for ChannelReader {
                 }
                 Poll::Pending => return Poll::Pending,
                 Poll::Ready(Err(e)) => {
-                    panic!("{:?}", e);
+                    return Poll::Ready(Err(std::io::Error::other(e)));
                 }
             }
         }

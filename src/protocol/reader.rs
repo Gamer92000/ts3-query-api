@@ -145,6 +145,12 @@ impl Reader {
             .await
             .map_err(QueryError::ReadError)?;
 
+        // A zero-length read means the peer closed the connection (EOF). Returning
+        // here instead of looping avoids a busy-spin that never yields.
+        if read_bytes == 0 {
+            return Err(QueryError::ConnectionClosed);
+        }
+
         self.receive_buffer
             .extend_from_slice(&self.read_buffer[..read_bytes]);
 

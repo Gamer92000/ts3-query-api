@@ -87,4 +87,13 @@ pub enum QueryError {
 
     #[error("SSH Connection Error")]
     SshError(#[from] makiko::Error),
+
+    #[error("Authentication failed: {message}")]
+    AuthenticationFailed { message: String },
+
+    #[error("Host key verification failed: expected {expected}, got {actual}")]
+    HostKeyMismatch { expected: String, actual: String },
+
+    #[error("Timed out waiting for server response")]
+    Timeout,
 }

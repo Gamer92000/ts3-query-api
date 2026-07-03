@@ -5,9 +5,28 @@ use crate::parser::{Command, Decode, DecodeCustomInto, DecodeInto, Decoder};
 use crate::protocol::connection::Connection;
 use crate::protocol::ssh::{ChannelReader, ChannelWriter};
 use crate::protocol::types::{RawCommandRequest, RawCommandResponse};
-use log::info;
+use log::{info, warn};
 use tokio::net::{TcpStream, ToSocketAddrs};
 use tokio::spawn;
+
+/// How the server's SSH host key is verified when connecting.
+///
+/// TeamSpeak query-over-SSH does not authenticate the server for you. Without
+/// verification a man-in-the-middle can impersonate the server and capture the
+/// query login. Pick a policy deliberately.
+pub enum HostKeyVerification {
+    /// Verify the server's SHA-256 public-key fingerprint against this exact value.
+    ///
+    /// The expected value uses the OpenSSH format `SHA256:<base64>` (the same
+    /// string logged on the first connection). A mismatch aborts the connection
+    /// with [`QueryError::HostKeyMismatch`].
+    Fingerprint(String),
+    /// Accept any server key without verification.
+    ///
+    /// Vulnerable to man-in-the-middle attacks — only for trusted networks or
+    /// throwaway/testing use. Logs a warning on every connect.
+    InsecureAcceptAny,
+}
 
 pub struct QueryClient {
     command_tx: flume::Sender<RawCommandRequest>,
@@ -20,6 +39,7 @@ impl QueryClient {
         addr: A,
         username: &str,
         password: &str,
+        host_key: HostKeyVerification,
     ) -> Result<Self, QueryError> {
         let stream = TcpStream::connect(addr)
             .await
@@ -29,47 +49,73 @@ impl QueryClient {
         let (client, mut client_rx, client_fut) = makiko::Client::open(stream, config)?;
 
         tokio::task::spawn(async move {
-            client_fut.await.expect("Error in client future");
+            if let Err(e) = client_fut.await {
+                warn!("SSH client closed: {:?}", e);
+            }
         });
+
+        // Reports a host-key mismatch out of the detached event loop so `connect`
+        // can surface the specific error instead of a generic SSH failure.
+        let (hostkey_err_tx, hostkey_err_rx) = flume::bounded::<QueryError>(1);
 
         tokio::task::spawn(async move {
             loop {
-                let event = client_rx
-                    .recv()
-                    .await
-                    .expect("Error while receiving client event");
-
-                let Some(event) = event else { break };
-
-                match event {
-                    makiko::ClientEvent::ServerPubkey(pubkey, accept) => {
-                        info!(
-                            "Server pubkey type {}, fingerprint {}",
-                            pubkey.type_str(),
-                            pubkey.fingerprint()
-                        );
-                        accept.accept();
+                let event = match client_rx.recv().await {
+                    Ok(Some(event)) => event,
+                    Ok(None) => break,
+                    Err(e) => {
+                        warn!("Error while receiving client event: {:?}", e);
+                        break;
                     }
+                };
 
-                    _ => {}
+                if let makiko::ClientEvent::ServerPubkey(pubkey, accept) = event {
+                    let actual = pubkey.fingerprint();
+                    info!("Server pubkey type {}, fingerprint {}", pubkey.type_str(), actual);
+
+                    match &host_key {
+                        HostKeyVerification::Fingerprint(expected) if *expected == actual => {
+                            accept.accept();
+                        }
+                        HostKeyVerification::Fingerprint(expected) => {
+                            let _ = hostkey_err_tx.send(QueryError::HostKeyMismatch {
+                                expected: expected.clone(),
+                                actual: actual.clone(),
+                            });
+                            accept.reject(std::io::Error::new(
+                                std::io::ErrorKind::PermissionDenied,
+                                "host key fingerprint mismatch",
+                            ));
+                        }
+                        HostKeyVerification::InsecureAcceptAny => {
+                            warn!("Accepting server host key WITHOUT verification (insecure): {}", actual);
+                            accept.accept();
+                        }
+                    }
                 }
             }
         });
 
-        let auth_res = client
-            .auth_password(username.into(), password.into())
-            .await
-            .expect("Error when trying to authenticate");
+        let auth_res = match client.auth_password(username.into(), password.into()).await {
+            Ok(res) => res,
+            // A rejected host key aborts the SSH client, which surfaces here as a
+            // generic error; prefer the specific mismatch error if we have one.
+            Err(e) => return Err(hostkey_err_rx.try_recv().unwrap_or_else(|_| e.into())),
+        };
 
         match auth_res {
             makiko::AuthPasswordResult::Success => {
                 info!("We have successfully authenticated using a password");
             }
             makiko::AuthPasswordResult::ChangePassword(prompt) => {
-                panic!("The server asks us to change password: {:?}", prompt);
+                return Err(QueryError::AuthenticationFailed {
+                    message: format!("server requires a password change: {}", prompt.prompt),
+                });
             }
             makiko::AuthPasswordResult::Failure(failure) => {
-                panic!("The server rejected authentication: {:?}", failure);
+                return Err(QueryError::AuthenticationFailed {
+                    message: format!("server rejected authentication: {:?}", failure),
+                });
             }
         }
 
@@ -77,8 +123,8 @@ impl QueryClient {
             .open_session(makiko::ChannelConfig::default())
             .await?;
 
-        let a = sess.shell()?;
-        a.wait().await?;
+        let shell = sess.shell()?;
+        shell.wait().await?;
 
         let (command_tx, command_rx) = flume::unbounded::<RawCommandRequest>();
         let (event_tx, event_rx) = flume::unbounded::<Event>();
