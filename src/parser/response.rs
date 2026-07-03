@@ -252,7 +252,11 @@ impl<'a> Decoder<'a> {
 
             match self.cur_sep {
                 Separator::Pair => {}
-                Separator::Eof => return Err(ParseError::Eof),
+                // Both mark the end of the current record: a key not found before
+                // here is simply absent from this record. `List` additionally means
+                // more records follow (the boundary is left in `cur_sep` for the
+                // caller, e.g. the `Vec` decoder, to advance to the next record).
+                Separator::Eof | Separator::List => return Err(ParseError::Eof),
                 _ => return Err(ParseError::InvalidSeparator(self.cur_sep)),
             }
         }
@@ -488,6 +492,31 @@ mod test {
         assert_eq!(response.some_bool, true);
         assert_eq!(response.some_list, vec!["hello", "world"]);
         assert_eq!(response.some_list2, vec![69, 420]);
+    }
+
+    #[test]
+    fn test_decode_multi_record_absent_field() {
+        // Reproduces the apikeylist bug: a declared field (`token`) is absent from
+        // every record of a `|`-separated list. Searching for it must stop at the
+        // record boundary instead of scanning across it.
+        ts_response! {
+            Row {
+                token("token"): Option<String>,
+                id: i32,
+                name: String,
+            }
+        }
+
+        let mut decoder = Decoder::new(b"id=1 name=alpha|id=2 name=beta");
+        let rows = Vec::<Row>::decode(&mut decoder).unwrap();
+
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0].token, None);
+        assert_eq!(rows[0].id, 1);
+        assert_eq!(rows[0].name, "alpha");
+        assert_eq!(rows[1].token, None);
+        assert_eq!(rows[1].id, 2);
+        assert_eq!(rows[1].name, "beta");
     }
 
     #[test]

@@ -18,6 +18,7 @@ const EMPTY_RESULT_SET: i32 = 1281;
 /// TeamSpeak query-over-SSH does not authenticate the server for you. Without
 /// verification a man-in-the-middle can impersonate the server and capture the
 /// query login. Pick a policy deliberately.
+#[derive(Debug, Clone)]
 pub enum HostKeyVerification {
     /// Verify the server's SHA-256 public-key fingerprint against this exact value.
     ///

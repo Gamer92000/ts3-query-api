@@ -1,0 +1,87 @@
+name: e2e
+
+on:
+  push:
+    branches: [main, dev]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  e2e:
+    runs-on: ubuntu-latest
+
+    env:
+      # serveradmin query password, set on the server and reused by the tests
+      TS_QUERY_PASSWORD: ci_e2e_serveradmin_pw
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      # Fail fast on compile errors before spinning up a server.
+      - name: Build tests
+        run: cargo test --no-run --tests
+
+      - name: Download latest TeamSpeak 6 server
+        run: |
+          set -euo pipefail
+          url=$(curl -fsSL https://api.github.com/repos/teamspeak/teamspeak6-server/releases/latest \
+            | jq -r '.assets[] | select(.name | test("linux-amd64\\.tar\\.xz$")) | .browser_download_url')
+          echo "Downloading $url"
+          curl -fsSL "$url" -o tsserver.tar.xz
+          mkdir -p tsserver-dir
+          tar -xJf tsserver.tar.xz -C tsserver-dir
+          bin=$(find tsserver-dir -type f -name tsserver | head -n1)
+          if [ -z "$bin" ]; then echo "tsserver binary not found in archive"; exit 1; fi
+          chmod +x "$bin"
+          echo "TSSERVER_BIN=$bin" >> "$GITHUB_ENV"
+          echo "TSSERVER_DIR=$(dirname "$bin")" >> "$GITHUB_ENV"
+
+      - name: Start TeamSpeak 6 server
+        run: |
+          set -euo pipefail
+          cd "$TSSERVER_DIR"
+          # The SSH query interface is disabled by default and must be enabled.
+          # Skipping the brute-force check avoids throttling the test's rapid
+          # (re)connections.
+          TSSERVER_LICENSE_ACCEPTED=accept \
+          TSSERVER_QUERY_ADMIN_PASSWORD="$TS_QUERY_PASSWORD" \
+          TSSERVER_QUERY_SSH_ENABLED=1 \
+          TSSERVER_QUERY_SSH_PORT=10022 \
+          TSSERVER_QUERY_SKIP_BRUTE_FORCE_CHECK=1 \
+          ./tsserver --accept-license > "$GITHUB_WORKSPACE/tsserver.log" 2>&1 &
+          echo $! > "$GITHUB_WORKSPACE/tsserver.pid"
+
+      - name: Wait for query port
+        run: |
+          for _ in $(seq 1 60); do
+            if (echo > /dev/tcp/127.0.0.1/10022) >/dev/null 2>&1; then
+              echo "query port 10022 is open"
+              # give the default virtual server a moment to come up
+              sleep 3
+              exit 0
+            fi
+            sleep 2
+          done
+          echo "server did not open the query port in time"
+          cat "$GITHUB_WORKSPACE/tsserver.log" || true
+          exit 1
+
+      - name: Run e2e tests
+        env:
+          TS_E2E_HOST: 127.0.0.1
+          TS_E2E_PORT: "10022"
+          TS_E2E_USER: serveradmin
+          TS_E2E_PASS: ${{ env.TS_QUERY_PASSWORD }}
+        run: cargo test --test e2e -- --nocapture
+
+      - name: Server logs
+        if: always()
+        run: cat "$GITHUB_WORKSPACE/tsserver.log" || true
+
+      - name: Stop server
+        if: always()
+        run: kill "$(cat "$GITHUB_WORKSPACE/tsserver.pid")" 2>/dev/null || true
