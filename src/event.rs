@@ -8,6 +8,7 @@ pub enum Event {
     ClientMoved(ClientMoveEvent),
     ClientEnterView(ClientEnterViewEvent),
     ClientLeftView(ClientLeftViewEvent),
+    ClientUpdated(ClientUpdatedEvent),
     ChannelCreated(ChannelCreateEvent),
     ChannelDeleted(ChannelDeleteEvent),
     ChannelEdited(ChannelEditEvent),
@@ -28,6 +29,7 @@ impl Event {
             "notifyclientmoved" => Event::ClientMoved(decoder.decode()?),
             "notifycliententerview" => Event::ClientEnterView(decoder.decode()?),
             "notifyclientleftview" => Event::ClientLeftView(decoder.decode()?),
+            "notifyclientupdated" => Event::ClientUpdated(decoder.decode()?),
             "notifychannelcreated" => Event::ChannelCreated(decoder.decode()?),
             "notifychanneldeleted" => Event::ChannelDeleted(decoder.decode()?),
             "notifychanneledited" => Event::ChannelEdited(decoder.decode()?),
@@ -45,5 +47,40 @@ impl Event {
                 })
             }
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parses_partial_client_updated() {
+        // The server sends only the changed properties plus `clid`.
+        let event = Event::from("notifyclientupdated clid=7 client_input_muted=1").unwrap();
+        match event {
+            Event::ClientUpdated(e) => {
+                assert_eq!(e.client_id, 7);
+                assert_eq!(e.input_muted, Some(true));
+                assert_eq!(e.output_muted, None);
+                assert_eq!(e.away, None);
+            }
+            other => panic!("expected ClientUpdated, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parses_client_updated_away() {
+        let event =
+            Event::from("notifyclientupdated clid=42 client_away=1 client_away_message=brb").unwrap();
+        match event {
+            Event::ClientUpdated(e) => {
+                assert_eq!(e.client_id, 42);
+                assert_eq!(e.away, Some(true));
+                assert_eq!(e.away_message.as_deref(), Some("brb"));
+                assert_eq!(e.input_muted, None);
+            }
+            other => panic!("expected ClientUpdated, got {other:?}"),
+        }
     }
 }

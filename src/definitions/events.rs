@@ -101,6 +101,32 @@ ts_response! {
 }
 
 ts_response! {
+    // Sent as `notifyclientupdated` when a visible client changes properties
+    // (mute, away, talk power, ...). Only `client_id` is guaranteed; the server
+    // includes just the changed properties, so every other field is optional.
+    ClientUpdatedEvent {
+        client_id("clid"): i32,
+
+        nickname("client_nickname"): Option<String>,
+
+        away("client_away"): Option<bool>,
+        away_message("client_away_message"): Option<String>,
+
+        input_muted("client_input_muted"): Option<bool>,
+        output_muted("client_output_muted"): Option<bool>,
+        outputonly_muted("client_outputonly_muted"): Option<bool>,
+        input_hardware("client_input_hardware"): Option<bool>,
+        output_hardware("client_output_hardware"): Option<bool>,
+
+        talk_power("client_talk_power"): Option<i32>,
+        is_talker("client_is_talker"): Option<bool>,
+        is_priority_speaker("client_is_priority_speaker"): Option<bool>,
+        is_channel_commander("client_is_channel_commander"): Option<bool>,
+        is_recording("client_is_recording"): Option<bool>,
+    }
+}
+
+ts_response! {
     ChannelCreateEvent {
         invoker_id("invokerid"): i32,
         invoker_name("invokername"): String,
