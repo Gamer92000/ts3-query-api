@@ -319,6 +319,12 @@ impl<T: Decode> Decode for Vec<T> {
 
         let mut vec = Vec::new();
 
+        // An empty response body is an empty list, not a parse error.
+        if decoder.is_eof() {
+            decoder.pop_scope();
+            return Ok(vec);
+        }
+
         loop {
             vec.push(T::decode(decoder)?);
 
@@ -338,6 +344,12 @@ impl<T: Decode> Decode for Vec<T> {
 impl<T: Decode> DecodeInto for Vec<T> {
     fn decode_into(mut self, decoder: &mut Decoder) -> Result<Self, ParseError> {
         decoder.push_scope();
+
+        // An empty response body is an empty list, not a parse error.
+        if decoder.is_eof() {
+            decoder.pop_scope();
+            return Ok(self);
+        }
 
         loop {
             self.push(T::decode(decoder)?);
@@ -361,6 +373,12 @@ impl<T> DecodeCustomInto<T> for Vec<T> {
         F: Fn(&mut Decoder) -> Result<T, ParseError>,
     {
         decoder.push_scope();
+
+        // An empty response body is an empty list, not a parse error.
+        if decoder.is_eof() {
+            decoder.pop_scope();
+            return Ok(self);
+        }
 
         loop {
             self.push(gen(decoder)?);

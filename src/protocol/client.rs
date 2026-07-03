@@ -9,6 +9,10 @@ use log::{info, warn};
 use tokio::net::{TcpStream, ToSocketAddrs};
 use tokio::spawn;
 
+/// Server error id returned by list queries when the result set is empty
+/// (e.g. `banlist` with no bans). Treated as an empty result, not an error.
+const EMPTY_RESULT_SET: i32 = 1281;
+
 /// How the server's SSH host key is verified when connecting.
 ///
 /// TeamSpeak query-over-SSH does not authenticate the server for you. Without
@@ -168,7 +172,13 @@ impl QueryClient {
         command: Command,
         dst: I,
     ) -> Result<I, QueryError> {
-        let response = self.send_command_raw(command).await?;
+        let response = match self.send_command_raw(command).await {
+            Ok(response) => response,
+            // A list query with no rows reports the "empty result set" error;
+            // treat it as an empty result rather than a failure.
+            Err(QueryError::QueryError { id: EMPTY_RESULT_SET, .. }) => return Ok(dst),
+            Err(e) => return Err(e),
+        };
         let mut decoder = Decoder::new(response.content());
 
         dst.decode_into(&mut decoder)
@@ -184,7 +194,11 @@ impl QueryClient {
     where
         F: Fn(&mut Decoder) -> Result<T, ParseError>,
     {
-        let response = self.send_command_raw(command).await?;
+        let response = match self.send_command_raw(command).await {
+            Ok(response) => response,
+            Err(QueryError::QueryError { id: EMPTY_RESULT_SET, .. }) => return Ok(dst),
+            Err(e) => return Err(e),
+        };
         let mut decoder = Decoder::new(response.content());
 
         dst.decode_into(&mut decoder, gen)

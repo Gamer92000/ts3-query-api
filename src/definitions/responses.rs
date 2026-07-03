@@ -25,16 +25,37 @@ ts_response! {
 
 // apikey
 
+/// Remaining lifetime of an API key. The server reports either a number of
+/// seconds or the literal `unlimited`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TimeLeft {
+    Unlimited,
+    Seconds(u64),
+}
+
+impl DecodeValue for TimeLeft {
+    fn decode(_key: &str, value: String) -> Result<Self, ParseError> {
+        if value == "unlimited" {
+            Ok(TimeLeft::Unlimited)
+        } else {
+            Ok(TimeLeft::Seconds(value.parse()?))
+        }
+    }
+}
+
 ts_response! {
     ApiKey {
-        key("apikey"): String,
+        // Only returned by `apikeyadd`; `apikeylist` never discloses the token.
+        key("apikey"): Option<String>,
         id: i32,
         server_id("sid"): i32,
         client_database_id("cldbid"): i32,
         scope: Scope,
-        time_left: u64,
+        time_left: TimeLeft,
         created_at: u64,
         expires_at: u64,
+        // Only present in `apikeylist` entries.
+        custom_id: Option<String>,
     }
 }
 
@@ -78,14 +99,16 @@ ts_response! {
     WhoAmI {
         virtualserver_status: ServerStatus,
         virtualserver_id: i32,
-        virtualserver_unique_identifier: String,
+        // Emitted as a bare key (no value) until a virtual server is selected.
+        virtualserver_unique_identifier: String = String::new(),
         virtualserver_port: i32,
 
         id("client_id"): i32,
         database_id("client_database_id"): i32,
         unique_identifier("client_unique_identifier"): String,
 
-        nickname("client_nickname"): String,
+        // Bare key (no value) until a virtual server is selected.
+        nickname("client_nickname"): String = String::new(),
         login_name("client_login_name"): String,
         channel_id("client_channel_id"): i32,
         origin_server_id("client_origin_server_id"): i32,
@@ -108,7 +131,8 @@ ts_response! {
 
 ts_response! {
     ChannelListTopicEntry {
-        topic("channel_topic"): String
+        // Emitted as a bare key (no value) when the channel has no topic.
+        topic("channel_topic"): String = String::new()
     }
 }
 
@@ -151,7 +175,8 @@ ts_response! {
 
 ts_response! {
     ChannelListBannerEntry {
-        banner_gfx_url("channel_banner_gfx_url"): String,
+        // Emitted as a bare key (no value) when the channel has no banner.
+        banner_gfx_url("channel_banner_gfx_url"): String = String::new(),
         banner_mode("channel_banner_mode"): i32
     }
 }
